@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Space Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
+
+  --color-bg: #06070b;
+  --color-surface: #0c0e15;
+  --color-card: #12151f;
+  --color-elev: #1a1f2c;
+  --color-line: #ffffff12;
+  --color-ink: #eef0f6;
+  --color-mute: #9aa2b4;
+  --color-faint: #5d657a;
+  --color-primary: #7b6cff;
+  --color-primary2: #a293ff;
+  --color-good: #34d399;
+  --color-bad: #fb5c7a;
+  --color-warn: #fbbf24;
+
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-float: float 7s ease-in-out infinite;
+
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+  @keyframes float {
+    0%,
+    100% {
+      transform: translate3d(0, 0, 0);
+    }
+    50% {
+      transform: translate3d(0, -14px, 0);
+    }
+  }
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+::selection {
+  background: #7b6cff55;
+}
+
+/* hide scrollbars for chip rails */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.skeleton {
+  background: linear-gradient(
+    110deg,
+    #ffffff08 40%,
+    #ffffff14 50%,
+    #ffffff08 60%
+  );
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+.card {
+  background: linear-gradient(160deg, #141826, #0f121c 70%);
+  border: 1px solid var(--color-line);
+  border-radius: 24px;
+}
+
+.pressable {
+  transition: transform 0.15s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.pressable:active {
+  transform: scale(0.965);
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+}
+
+.text-gradient {
+  background: linear-gradient(100deg, #fff 20%, #a293ff 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
