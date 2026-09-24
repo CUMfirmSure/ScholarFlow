@@ -13,7 +13,7 @@
 import { DB_VERSION, emptyDB, type DB, type Store, type TableName } from "./store";
 
 export const BACKUP_FORMAT = "scholarflow-backup";
-export const BACKUP_SCHEMA = 1;
+export const BACKUP_SCHEMA = 2;
 
 export type BackupFile = {
   format: typeof BACKUP_FORMAT;
@@ -21,18 +21,19 @@ export type BackupFile = {
   exportedAt: string;
   app: string;
   counts: Record<string, number>;
-  data: Pick<DB, "courses" | "attendance" | "tasks" | "exams" | "holidays" | "syllabus" | "logs">;
+  data: Pick<DB, "courses" | "slots" | "attendance" | "tasks" | "exams" | "holidays" | "syllabus" | "logs">;
 };
 
 export type RestoreReport =
   | { ok: true; counts: Record<string, number>; repaired: string[] }
   | { ok: false; error: string };
 
-const TABLES: TableName[] = ["courses", "attendance", "tasks", "exams", "holidays", "syllabus", "logs"];
+const TABLES: TableName[] = ["courses", "slots", "attendance", "tasks", "exams", "holidays", "syllabus", "logs"];
 
 export function makeBackup(db: DB, nowIso = new Date().toISOString()): BackupFile {
   const data = {
     courses: db.courses,
+    slots: db.slots,
     attendance: db.attendance,
     tasks: db.tasks,
     exams: db.exams,
@@ -88,7 +89,12 @@ export function parseBackup(raw: string): { db: DB; repaired: string[] } {
   );
   need(isObj(f.data), "Backup has no data section.");
   const d = f.data as Record<string, unknown>;
-  for (const t of TABLES) need(Array.isArray(d[t]), `Backup is missing the “${t}” table.`);
+  const fileSchema = f.schema as number;
+  // "slots" only exists from schema 2. A schema-1 backup is valid without it and gets slots derived below.
+  for (const t of TABLES) {
+    if (t === "slots" && fileSchema < 2) continue;
+    need(Array.isArray(d[t]), `Backup is missing the “${t}” table.`);
+  }
 
   const repaired: string[] = [];
   const db = emptyDB();
@@ -119,6 +125,43 @@ export function parseBackup(raw: string): { db: DB; repaired: string[] } {
       targetPercent: Math.min(100, Math.max(1, Number(row.targetPercent) || 75)),
       createdAt: s(row.createdAt, new Date().toISOString()),
     });
+  }
+
+  /* slots — belong to a course; an orphan would be invisible garbage, so it's a hard error */
+  if (fileSchema >= 2) {
+    const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    for (const [i, r] of (d.slots as unknown[]).entries()) {
+      need(isObj(r) && isId(r.id), `Timetable slot #${i + 1} has an invalid id.`);
+      const row = r as Record<string, unknown>;
+      need(courseIds.has(row.courseId as number), `Timetable slot #${i + 1} points to a course that isn't in the backup.`);
+      need(DAYS.includes(row.dayOfWeek as string), `Timetable slot #${i + 1} has an invalid weekday.`);
+      db.slots.push({
+        id: row.id as number,
+        courseId: row.courseId as number,
+        dayOfWeek: row.dayOfWeek as string,
+        startTime: s(row.startTime),
+        endTime: s(row.endTime),
+        label: s(row.label),
+        sortOrder: Number.isFinite(Number(row.sortOrder)) ? Number(row.sortOrder) : 0,
+      });
+    }
+  } else {
+    // schema 1 -> derive one slot per day from the course's shared start/end (same rule as the store migration)
+    let n = 0;
+    for (const c of db.courses) {
+      c.daysOfWeek.forEach((day, i) =>
+        db.slots.push({
+          id: ++n,
+          courseId: c.id,
+          dayOfWeek: day,
+          startTime: c.startTime,
+          endTime: c.endTime,
+          label: "",
+          sortOrder: i,
+        })
+      );
+    }
+    repaired.push("timetable upgraded from an older backup");
   }
 
   /* attendance — orphan rows are a hard error (cascade would have removed them) */

@@ -8,12 +8,13 @@
  */
 import { format, subDays } from "date-fns";
 import type { DB, Store } from "./store";
-import { bunkMath, COURSE_COLORS, dowKey, eachDateKey, pct, todayKey } from "@/lib/utils";
+import { bunkMath, COURSE_COLORS, DOW_ORDER, dowKey, eachDateKey, pct, todayKey } from "@/lib/utils";
 import type {
   AttendanceRow,
   CourseRow,
   ExamRow,
   HolidayRow,
+  SlotRow,
   SyllabusRow,
   TaskRow,
 } from "@/lib/types";
@@ -38,6 +39,50 @@ function log(db: DB, action: string, entity: string, detail: string, now: string
 }
 
 const str = (v: unknown, d = "") => (v === undefined || v === null ? d : String(v));
+
+
+/* ------------------------------ course slots ------------------------------ */
+type SlotIn = { dayOfWeek: string; startTime: string; endTime: string; label: string };
+
+/** Port of cleanSlots(): keep only entries with a valid weekday, coerce the rest to strings. */
+function cleanSlots(raw: unknown): SlotIn[] {
+  if (!Array.isArray(raw)) return [];
+  const valid = new Set(DOW_ORDER as readonly string[]);
+  const out: SlotIn[] = [];
+  for (const s of raw as Record<string, unknown>[]) {
+    if (!s || typeof s.dayOfWeek !== "string" || !valid.has(s.dayOfWeek)) continue;
+    out.push({
+      dayOfWeek: s.dayOfWeek,
+      startTime: String(s.startTime ?? ""),
+      endTime: String(s.endTime ?? ""),
+      label: String(s.label ?? ""),
+    });
+  }
+  return out;
+}
+
+/** ORDER BY sort_order ASC, start_time ASC (the original's exact ordering). */
+const bySlotOrder = (a: SlotRow, b: SlotRow) =>
+  a.sortOrder - b.sortOrder || a.startTime.localeCompare(b.startTime);
+
+const slotsOf = (db: DB, courseId: number) =>
+  db.slots.filter((s) => s.courseId === courseId).sort(bySlotOrder);
+
+const withSlots = (db: DB, c: CourseRow): CourseRow => ({ ...c, slots: slotsOf(db, c.id) });
+
+function insertSlots(db: DB, courseId: number, slots: SlotIn[]) {
+  slots.forEach((s, i) => {
+    db.slots.push({
+      id: ++db.seq.slots,
+      courseId,
+      dayOfWeek: s.dayOfWeek,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      label: s.label,
+      sortOrder: i,
+    });
+  });
+}
 
 /* ------------------------------ sorting ------------------------------ */
 const byStr =
@@ -89,6 +134,13 @@ function summary(db: DB) {
     byCourse.set(a.courseId, arr);
   }
 
+  const slotsByCourse = new Map<number, SlotRow[]>();
+  for (const sl of [...db.slots].sort(bySlotOrder)) {
+    const arr = slotsByCourse.get(sl.courseId) ?? [];
+    arr.push(sl);
+    slotsByCourse.set(sl.courseId, arr);
+  }
+
   const courseStats = courseRows.map((c) => {
     const marks = (byCourse.get(c.id) ?? []).sort((a, b) => a.date.localeCompare(b.date));
     const present = marks.filter((m) => m.status === "present").length;
@@ -101,6 +153,25 @@ function summary(db: DB) {
       const m = marks.find((x) => x.date === key);
       return { date: key, status: m ? m.status : null };
     });
+    const mySlots = slotsByCourse.get(c.id) ?? [];
+    let todaySlots = mySlots
+      .filter((sl) => sl.dayOfWeek === dow)
+      .sort((a, b) => a.startTime.localeCompare(b.startTime));
+    // legacy fallback (as in the original): days set on the course but no slot rows.
+    if (todaySlots.length === 0 && (c.daysOfWeek ?? []).includes(dow)) {
+      todaySlots = [
+        {
+          id: -c.id,
+          courseId: c.id,
+          dayOfWeek: dow,
+          startTime: c.startTime ?? "",
+          endTime: c.endTime ?? "",
+          label: "",
+          sortOrder: 0,
+        },
+      ];
+    }
+
     return {
       ...c,
       present,
@@ -110,7 +181,9 @@ function summary(db: DB) {
       percentage: pct(present, total),
       bunk: bunkMath(present, total, c.targetPercent),
       todayMark,
-      meetsToday: !holidaySet.has(today) && (c.daysOfWeek ?? []).includes(dow),
+      slots: mySlots,
+      todaySlots,
+      meetsToday: !holidaySet.has(today) && todaySlots.length > 0,
       last14,
     };
   });
@@ -147,7 +220,9 @@ function summary(db: DB) {
     courses: courseStats,
     todayLectures: courseStats
       .filter((c) => c.meetsToday)
-      .sort((a, b) => a.startTime.localeCompare(b.startTime)),
+      .sort((a, b) =>
+        (a.todaySlots[0]?.startTime ?? "99").localeCompare(b.todaySlots[0]?.startTime ?? "99")
+      ),
     overall: {
       present: overallPresent,
       total: overallTotal,
@@ -201,7 +276,10 @@ export async function handle(
         case "summary":
           return { status: 200, body: await store.read((db) => summary(db)) };
         case "courses":
-          return { status: 200, body: await store.read((db) => [...db.courses].sort(nameAsc)) };
+          return {
+            status: 200,
+            body: await store.read((db) => [...db.courses].sort(nameAsc).map((c) => withSlots(db, c))),
+          };
         case "tasks":
           return {
             status: 200,
@@ -285,6 +363,21 @@ export async function handle(
             typeof b.color === "string" && b.color
               ? b.color
               : COURSE_COLORS[db.courses.length % COURSE_COLORS.length];
+
+          const slots = cleanSlots(b.slots);
+          // deriveLegacy(): days/start come from slots when present, else from the legacy fields.
+          const days =
+            slots.length > 0
+              ? [...new Set(slots.map((x) => x.dayOfWeek))]
+              : Array.isArray(b.daysOfWeek)
+                ? (b.daysOfWeek as string[])
+                : [];
+          const start =
+            slots
+              .map((x) => x.startTime)
+              .filter(Boolean)
+              .sort()[0] ?? String(b.startTime ?? "");
+
           const row: CourseRow = {
             id: ++db.seq.courses,
             name: b.name.trim(),
@@ -292,37 +385,59 @@ export async function handle(
             color,
             instructor: str(b.instructor),
             location: str(b.location),
-            daysOfWeek: Array.isArray(b.daysOfWeek) ? (b.daysOfWeek as string[]) : [],
-            startTime: str(b.startTime),
+            daysOfWeek: days,
+            startTime: start,
             endTime: str(b.endTime),
             targetPercent: Number(b.targetPercent) || 75,
             createdAt: now,
           };
           db.courses.push(row);
+
+          // No explicit slots but legacy days given -> synthesise uniform slots (as the original does).
+          const finalSlots: SlotIn[] =
+            slots.length > 0
+              ? slots
+              : days.map((d) => ({ dayOfWeek: d, startTime: start, endTime: str(b.endTime), label: "" }));
+          insertSlots(db, row.id, finalSlots);
+
           log(db, "create", "course", `Added course “${row.name}”`, now);
-          return { status: 201, body: row };
+          return { status: 201, body: withSlots(db, row) };
         }
         case "PATCH courses": {
           if (!id) throw bad("Invalid id");
           const row = db.courses.find((c) => c.id === id);
           if (!row) throw bad("Not found", 404);
+          // Original: `slots` is only honoured if it is an array; otherwise slots are left alone.
+          const slots = b.slots !== undefined && Array.isArray(b.slots) ? cleanSlots(b.slots) : null;
+
           if (b.name !== undefined) row.name = String(b.name);
           if (b.color !== undefined) row.color = String(b.color);
+          if (b.code !== undefined) row.code = String(b.code);
           if (b.instructor !== undefined) row.instructor = String(b.instructor);
           if (b.location !== undefined) row.location = String(b.location);
-          if (b.daysOfWeek !== undefined) row.daysOfWeek = b.daysOfWeek as string[];
-          if (b.startTime !== undefined) row.startTime = String(b.startTime);
           if (b.endTime !== undefined) row.endTime = String(b.endTime);
           if (b.targetPercent !== undefined) row.targetPercent = Number(b.targetPercent);
+          if (slots) {
+            row.daysOfWeek = [...new Set(slots.map((x) => x.dayOfWeek))];
+            row.startTime =
+              slots
+                .map((x) => x.startTime)
+                .filter(Boolean)
+                .sort()[0] ?? "";
+            // Replace ALL slots for this course.
+            db.slots = db.slots.filter((x) => x.courseId !== id);
+            insertSlots(db, id, slots);
+          }
           log(db, "update", "course", `Updated course “${row.name}”`, now);
-          return { status: 200, body: row };
+          return { status: 200, body: withSlots(db, row) };
         }
         case "DELETE courses": {
           if (!id) throw bad("Invalid id");
           const i = db.courses.findIndex((c) => c.id === id);
           if (i < 0) throw bad("Not found", 404);
           const [row] = db.courses.splice(i, 1);
-          // Mirror FK rules: attendance + syllabus CASCADE, tasks + exams SET NULL.
+          // Mirror FK rules: slots + attendance + syllabus CASCADE, tasks + exams SET NULL.
+          db.slots = db.slots.filter((x) => x.courseId !== id);
           db.attendance = db.attendance.filter((a) => a.courseId !== id);
           db.syllabus = db.syllabus.filter((s) => s.courseId !== id);
           for (const t of db.tasks) if (t.courseId === id) t.courseId = null;

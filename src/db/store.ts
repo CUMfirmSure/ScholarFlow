@@ -10,6 +10,7 @@
 import type {
   AttendanceRow,
   CourseRow,
+  SlotRow,
   ExamRow,
   HolidayRow,
   LogRow,
@@ -23,6 +24,7 @@ void (null as unknown as _H);
 export type DB = {
   seq: Record<TableName, number>;
   courses: CourseRow[];
+  slots: SlotRow[];
   attendance: AttendanceRow[];
   tasks: Omit<TaskRow, "courseName" | "courseColor">[];
   exams: Omit<ExamRow, "courseColor">[];
@@ -34,6 +36,7 @@ export type DB = {
 
 export type TableName =
   | "courses"
+  | "slots"
   | "attendance"
   | "tasks"
   | "exams"
@@ -41,13 +44,14 @@ export type TableName =
   | "syllabus"
   | "logs";
 
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 const KEY = "scholarflow:db:v1";
 
 export function emptyDB(): DB {
   return {
     seq: {
       courses: 0,
+      slots: 0,
       attendance: 0,
       tasks: 0,
       exams: 0,
@@ -56,6 +60,7 @@ export function emptyDB(): DB {
       logs: 0,
     },
     courses: [],
+    slots: [],
     attendance: [],
     tasks: [],
     exams: [],
@@ -64,6 +69,50 @@ export function emptyDB(): DB {
     logs: [],
     meta: { version: DB_VERSION, seeded: false },
   };
+}
+
+/**
+ * Upgrade an older on-disk snapshot to the current shape WITHOUT losing data.
+ * v1 -> v2: courses gained per-day time slots. Each v1 course meant "these days,
+ * one shared start/end", so we synthesise one slot per day from that.
+ * Returns null if the snapshot is unusable (caller then starts empty).
+ */
+export function migrate(raw: unknown): DB | null {
+  if (!raw || typeof raw !== "object") return null;
+  const snap = raw as Partial<DB> & { meta?: { version?: number; seeded?: boolean } };
+  const v = snap.meta?.version;
+  if (typeof v !== "number" || v > DB_VERSION) return null; // unknown/newer: refuse, don't corrupt
+
+  const base = emptyDB();
+  const db: DB = {
+    ...base,
+    ...(snap as DB),
+    seq: { ...base.seq, ...(snap.seq ?? {}) },
+    meta: { version: DB_VERSION, seeded: !!snap.meta?.seeded },
+  };
+  for (const t of ["courses", "slots", "attendance", "tasks", "exams", "holidays", "syllabus", "logs"] as const) {
+    if (!Array.isArray(db[t])) (db as Record<string, unknown>)[t] = [];
+  }
+
+  if (v < 2) {
+    db.slots = [];
+    db.seq.slots = 0;
+    for (const c of db.courses) {
+      const days = Array.isArray(c.daysOfWeek) ? c.daysOfWeek : [];
+      days.forEach((d, i) => {
+        db.slots.push({
+          id: ++db.seq.slots,
+          courseId: c.id,
+          dayOfWeek: d,
+          startTime: c.startTime ?? "",
+          endTime: c.endTime ?? "",
+          label: "",
+          sortOrder: i,
+        });
+      });
+    }
+  }
+  return db;
 }
 
 /** Pluggable persistence so the engine is testable in Node. */
@@ -84,7 +133,12 @@ export class Store {
   private async init() {
     try {
       const loaded = await this.persistence.load();
-      if (loaded && loaded.meta?.version === DB_VERSION) this.db = loaded;
+      const migrated = migrate(loaded);
+      if (migrated) {
+        this.db = migrated;
+        // Persist the upgrade immediately so a crash mid-session can't leave a half-migrated file.
+        if ((loaded as DB).meta?.version !== DB_VERSION) await this.persistence.save(this.db);
+      }
     } catch (e) {
       console.error("[store] load failed, starting empty", e);
     }

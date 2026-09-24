@@ -5,20 +5,29 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronDown,
   GraduationCap,
+  Pencil,
   ShieldAlert,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
 import { Ring } from "@/components/Ring";
 import { EmptyState, listItem, listStagger } from "@/components/ui";
-import { openSheet, apiSend, useApi } from "@/lib/useApi";
-import { cn, fmtDate, todayKey } from "@/lib/utils";
+import { openSheet, apiSend, useApi, OPEN_EVENT } from "@/lib/useApi";
+import { cn, DOW_LABEL, DOW_ORDER, fmtDate, slotTimeLabel, todayKey } from "@/lib/utils";
 import type { CourseStat, Summary } from "@/lib/types";
 import { AttendanceButtons } from "@/app/page";
 
 function CourseCard({ c, today }: { c: CourseStat; today: string }) {
   const [open, setOpen] = useState(false);
   const safe = c.total === 0 || c.percentage >= c.targetPercent;
+  const weekly = DOW_ORDER.map((d) => ({
+    day: d,
+    slots: c.slots.filter((s) => s.dayOfWeek === d),
+  })).filter((g) => g.slots.length > 0);
+  const todayTimes = c.todaySlots
+    .map(slotTimeLabel)
+    .filter(Boolean)
+    .join("  ·  ");
 
   return (
     <motion.div variants={listItem} className="card overflow-hidden">
@@ -73,22 +82,27 @@ function CourseCard({ c, today }: { c: CourseStat; today: string }) {
       </div>
 
       <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-3">
-        <div className="flex items-center gap-1.5 text-[11.5px] font-medium">
+        <div className="flex min-w-0 flex-col gap-1 text-[11.5px] font-medium">
           {c.total > 0 &&
             (safe ? (
               <span className="flex items-center gap-1.5 text-good">
-                <ShieldCheck size={14} /> {c.bunk.message}
+                <ShieldCheck size={14} className="shrink-0" /> {c.bunk.message}
               </span>
             ) : (
               <span className="flex items-center gap-1.5 text-bad">
-                <ShieldAlert size={14} /> {c.bunk.message}
+                <ShieldAlert size={14} className="shrink-0" /> {c.bunk.message}
               </span>
             ))}
+          {c.meetsToday && todayTimes && (
+            <span className="text-[10.5px] font-medium text-faint">
+              Today · {todayTimes}
+            </span>
+          )}
         </div>
         {c.meetsToday ? (
           <AttendanceButtons c={c} today={today} />
         ) : (
-          <span className="text-[11px] text-faint">No class today</span>
+          <span className="shrink-0 text-[11px] text-faint">Not today</span>
         )}
       </div>
 
@@ -116,20 +130,54 @@ function CourseCard({ c, today }: { c: CourseStat; today: string }) {
                 </div>
               ))}
             </div>
-            <div className="flex items-center justify-between px-4 pb-4">
-              <p className="text-[12px] text-mute">
+            {weekly.length > 0 && (
+              <div className="px-4 pb-3.5">
+                <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-faint">
+                  Weekly schedule
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {weekly.map((g) => (
+                    <span
+                      key={g.day}
+                      className="rounded-full border border-line bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-semibold text-mute"
+                    >
+                      <span className="text-ink">{DOW_LABEL[g.day]}</span>
+                      {"  "}
+                      {g.slots.map(slotTimeLabel).filter(Boolean).join("  &  ") ||
+                        "time varies"}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3 px-4 pb-4">
+              <p className="truncate text-[12px] text-mute">
                 {c.instructor ? `${c.instructor}` : ""}
                 {c.location ? ` · ${c.location}` : ""}
               </p>
-              <button
-                onClick={() => {
-                  if (confirm(`Remove ${c.name} and all its data?`))
-                    apiSend(`/api/courses/${c.id}`, "DELETE");
-                }}
-                className="pressable flex items-center gap-1.5 rounded-full border border-bad/25 bg-bad/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-bad"
-              >
-                <Trash2 size={12} /> Remove
-              </button>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent(OPEN_EVENT, {
+                        detail: { kind: "course", courseId: c.id },
+                      })
+                    )
+                  }
+                  className="pressable flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/[0.1] px-3 py-1.5 text-[11.5px] font-semibold text-primary2"
+                >
+                  <Pencil size={12} /> Edit
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm(`Remove ${c.name} and all its data?`))
+                      apiSend(`/api/courses/${c.id}`, "DELETE");
+                  }}
+                  className="pressable flex items-center gap-1.5 rounded-full border border-bad/25 bg-bad/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-bad"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
             </div>
           </motion.div>
         )}

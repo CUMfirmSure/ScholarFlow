@@ -1,3 +1,13 @@
+export type SlotRow = {
+  id: number;
+  courseId: number;
+  dayOfWeek: string;
+  startTime: string;
+  endTime: string;
+  label: string;
+  sortOrder: number;
+};
+
 export type CourseRow = {
   id: number;
   name: string;
@@ -10,6 +20,7 @@ export type CourseRow = {
   endTime: string;
   targetPercent: number;
   createdAt: string;
+  slots?: SlotRow[];
 };
 
 export type AttendanceRow = {
@@ -87,6 +98,8 @@ export type CourseStat = CourseRow & {
   bunk: { state: "none" | "safe" | "risk"; message: string };
   todayMark: AttendanceRow | null;
   meetsToday: boolean;
+  slots: SlotRow[];
+  todaySlots: SlotRow[];
   last14: { date: string; status: string | null }[];
 };
 

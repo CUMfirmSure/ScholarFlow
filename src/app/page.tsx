@@ -20,7 +20,7 @@ import {
 import { Ring } from "@/components/Ring";
 import { EmptyState, SectionTitle, listItem, listStagger } from "@/components/ui";
 import { apiSend, openSheet, useApi } from "@/lib/useApi";
-import { cn, fmtDate, greeting, relativeDue, todayKey } from "@/lib/utils";
+import { cn, fmtDate, greeting, relativeDue, slotTimeLabel, todayKey } from "@/lib/utils";
 import type { CourseStat, Summary, TaskRow } from "@/lib/types";
 
 const TYPE_TINT: Record<string, string> = {
@@ -272,8 +272,8 @@ export default function Dashboard() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[14.5px] font-semibold">{c.name}</p>
-                  <p className="text-[12px] text-mute">
-                    {c.startTime && c.endTime ? `${c.startTime} – ${c.endTime}` : "Scheduled today"}
+                  <p className="truncate text-[12px] text-mute">
+                    {c.todaySlots.map(slotTimeLabel).filter(Boolean).join("  ·  ") || "Scheduled today"}
                     {c.location ? ` · ${c.location}` : ""}
                   </p>
                 </div>

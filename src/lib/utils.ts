@@ -64,6 +64,25 @@ export function dowKey(d: Date = new Date()): string {
   return DOW[d.getDay()];
 }
 
+export const DOW_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+export type DowKey = (typeof DOW_ORDER)[number];
+
+export const DOW_LABEL: Record<string, string> = {
+  mon: "Mon",
+  tue: "Tue",
+  wed: "Wed",
+  thu: "Thu",
+  fri: "Fri",
+  sat: "Sat",
+  sun: "Sun",
+};
+
+export function slotTimeLabel(s: { startTime: string; endTime: string }) {
+  if (s.startTime && s.endTime) return `${s.startTime} – ${s.endTime}`;
+  if (s.startTime) return s.startTime;
+  return "";
+}
+
 export function bunkMath(
   present: number,
   total: number,

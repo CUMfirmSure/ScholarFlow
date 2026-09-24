@@ -7,6 +7,8 @@ import { addDays, format, getDay, subDays } from "date-fns";
 import type { DB, Store } from "./store";
 import type { CourseRow, SyllabusRow } from "@/lib/types";
 
+type SeedSlot = { day: string; start: string; end: string; label?: string };
+
 const DOW = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
 export function buildSeed(db: DB, nowIso: string, base: Date = new Date()) {
@@ -14,36 +16,50 @@ export function buildSeed(db: DB, nowIso: string, base: Date = new Date()) {
   const plus = (n: number) => key(addDays(base, n));
   const minus = (n: number) => key(subDays(base, n));
 
-  const mk = (
-    name: string,
-    code: string,
-    color: string,
-    instructor: string,
-    location: string,
-    daysOfWeek: string[],
-    startTime: string,
-    endTime: string
-  ): CourseRow => ({
+  const defs: {
+    name: string; code: string; color: string; instructor: string; location: string; slots: SeedSlot[];
+  }[] = [
+    { name: "Engineering Mathematics", code: "MA301", color: "#6C5CE7", instructor: "Dr. Rao", location: "LH-2",
+      slots: [{ day: "mon", start: "09:00", end: "09:55" }, { day: "wed", start: "08:00", end: "08:45" }, { day: "sat", start: "09:00", end: "09:30" }] },
+    { name: "Database Management Systems", code: "CS302", color: "#4D9DE0", instructor: "Prof. Iyer", location: "LH-5",
+      slots: [{ day: "tue", start: "10:05", end: "11:00" }, { day: "thu", start: "10:05", end: "11:00" }] },
+    { name: "Operating Systems", code: "CS303", color: "#22C55E", instructor: "Dr. Kulkarni", location: "LH-3",
+      slots: [{ day: "mon", start: "11:15", end: "12:10" }, { day: "tue", start: "11:15", end: "12:10" }, { day: "thu", start: "14:00", end: "14:55" }] },
+    { name: "Computer Networks", code: "CS304", color: "#F59E0B", instructor: "Prof. Mehta", location: "LH-6",
+      slots: [{ day: "wed", start: "14:00", end: "14:55" }, { day: "fri", start: "10:05", end: "11:00" }] },
+    { name: "DBMS Lab", code: "CS312", color: "#EF476F", instructor: "Prof. Iyer", location: "Lab-4",
+      slots: [{ day: "fri", start: "15:05", end: "17:00", label: "Lab" }] },
+  ];
+
+  const all: CourseRow[] = defs.map((d) => ({
     id: ++db.seq.courses,
-    name,
-    code,
-    color,
-    instructor,
-    location,
-    daysOfWeek,
-    startTime,
-    endTime,
+    name: d.name,
+    code: d.code,
+    color: d.color,
+    instructor: d.instructor,
+    location: d.location,
+    daysOfWeek: [...new Set(d.slots.map((x) => x.day))],
+    startTime: d.slots.map((x) => x.start).sort()[0] ?? "",
+    endTime: "",
     targetPercent: 75,
     createdAt: nowIso,
-  });
-
-  const maths = mk("Engineering Mathematics", "MA301", "#6C5CE7", "Dr. Rao", "LH-2", ["mon", "wed", "fri"], "09:00", "09:55");
-  const dbms = mk("Database Management Systems", "CS302", "#4D9DE0", "Prof. Iyer", "LH-5", ["tue", "thu"], "10:05", "11:00");
-  const os = mk("Operating Systems", "CS303", "#22C55E", "Dr. Kulkarni", "LH-3", ["mon", "tue", "thu"], "11:15", "12:10");
-  const cn = mk("Computer Networks", "CS304", "#F59E0B", "Prof. Mehta", "LH-6", ["wed", "fri"], "14:00", "14:55");
-  const lab = mk("DBMS Lab", "CS312", "#EF476F", "Prof. Iyer", "Lab-4", ["fri"], "15:05", "17:00");
-  const all = [maths, dbms, os, cn, lab];
+  }));
   db.courses.push(...all);
+
+  defs.forEach((d, i) =>
+    d.slots.forEach((x, j) =>
+      db.slots.push({
+        id: ++db.seq.slots,
+        courseId: all[i].id,
+        dayOfWeek: x.day,
+        startTime: x.start,
+        endTime: x.end,
+        label: x.label ?? "",
+        sortOrder: j,
+      })
+    )
+  );
+  const [maths, dbms, os, cn, lab] = all;
 
   // Attendance: past 24 days on scheduled weekdays, deterministic ~78% present.
   for (let i = 24; i >= 1; i--) {
