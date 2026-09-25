@@ -11,7 +11,10 @@ export type SheetKind =
   | "exam"
   | "import"
   | "holiday"
-  | "topic";
+  | "topic"
+  | "past_attendance"
+  | "report"
+  | "permissions";
 
 export function openSheet(kind: SheetKind) {
   window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: kind }));

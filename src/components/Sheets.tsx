@@ -1,7 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import {
+  addDays,
+  addMonths,
+  endOfMonth,
+  endOfWeek,
+  format,
+  isSameMonth,
+  parseISO,
+  startOfMonth,
+  startOfWeek,
+  subMonths,
+} from "date-fns";
 import { Sheet } from "@/components/Sheet";
 import {
   Field,
@@ -17,20 +29,33 @@ import {
 } from "@/lib/useApi";
 import {
   COURSE_COLORS,
+  DOW_ORDER,
   TASK_TYPES,
   cn,
+  fmtDate,
   todayKey,
 } from "@/lib/utils";
 import type { CourseRow, SlotRow } from "@/lib/types";
+import { saveTextFile } from "@/lib/files";
 import {
+  BellRing,
   BookMarked,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardList,
   Copy,
+  Download,
+  FileText,
   FileUp,
   GraduationCap,
+  History,
+  ListChecks,
   ListPlus,
   NotebookPen,
   Palmtree,
   Plus,
+  UserCheck,
   X,
 } from "lucide-react";
 
@@ -878,6 +903,543 @@ function TopicSheet({
   );
 }
 
+/* --------------------------- PAST ATTENDANCE ------------------------ */
+
+function PastAttendanceSheet({
+  open,
+  onClose,
+  courses,
+}: {
+  open: boolean;
+  onClose: () => void;
+  courses: CourseRow[];
+}) {
+  const [courseId, setCourseId] = useState<number | null>(null);
+  const [status, setStatus] = useState<"present" | "absent" | "cancelled">(
+    "present"
+  );
+  const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setCourseId(courses[0]?.id ?? null);
+      setStatus("present");
+      setCursor(startOfMonth(new Date()));
+      setSelected(new Set());
+      setProgress(null);
+    }
+  }, [open, courses]);
+
+  const course = courses.find((c) => c.id === courseId) ?? null;
+  const today = todayKey();
+  // Only allow past + today
+  const days = useMemo(() => {
+    const start = startOfWeek(startOfMonth(cursor));
+    const rows: Date[] = [];
+    let d = start;
+    const end = endOfWeek(endOfMonth(cursor));
+    while (d <= end) {
+      rows.push(d);
+      d = addDays(d, 1);
+    }
+    return rows;
+  }, [cursor]);
+
+  // Pre-compute which of these days are scheduled for the course
+  const dowSet = useMemo(
+    () => new Set(course?.slots?.map((s) => s.dayOfWeek) ?? []),
+    [course]
+  );
+
+  function toggle(key: string) {
+    if (key > today) return; // future lockout
+    setSelected((p) => {
+      const n = new Set(p);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
+  }
+
+  function rangeSelect(key: string) {
+    if (selected.size === 0) return toggle(key);
+    // pick a contig window from nearest already-selected day → key
+    const sorted = [...selected].sort();
+    const start = sorted[0];
+    let cur = start < key ? start : key;
+    const end = key < start ? start : key;
+    const set = new Set<string>();
+    while (cur <= end) {
+      if (cur <= today) set.add(cur);
+      cur = addDays(parseISO(cur), 1).toISOString().slice(0, 10);
+    }
+    setSelected(set);
+  }
+
+  function selectAllScheduled() {
+    if (!course) return;
+    const list: string[] = [];
+    let cur = startOfMonth(cursor);
+    const end = endOfMonth(cursor);
+    while (cur <= end) {
+      const key = format(cur, "yyyy-MM-dd");
+      if (key <= today) {
+        const dow = DOW_ORDER[cur.getDay()];
+        if (dowSet.has(dow)) list.push(key);
+      }
+      cur = addDays(cur, 1);
+    }
+    setSelected(new Set(list));
+  }
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  async function applyBulk() {
+    if (!courseId || selected.size === 0) return;
+    setBusy(true);
+    setProgress({ done: 0, total: selected.size });
+    const dates = [...selected];
+    let done = 0;
+    for (const date of dates) {
+      try {
+        await apiSend("/api/attendance", "POST", {
+          courseId,
+          date,
+          status,
+        });
+      } catch {
+        /* skip */
+      }
+      done += 1;
+      setProgress({ done, total: selected.size });
+    }
+    setBusy(false);
+    setProgress(null);
+    setSelected(new Set());
+    onClose();
+  }
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title="Add past attendance"
+      subtitle="Catch up missed days — tap days individually or with shift-range"
+    >
+      <div className="space-y-5">
+        <Field label="Course">
+          <select
+            className={cn(inputCls, "appearance-none")}
+            value={courseId ?? ""}
+            onChange={(e) => {
+              setCourseId(Number(e.target.value));
+              setSelected(new Set());
+            }}
+          >
+            {courses.map((c) => (
+              <option key={c.id} value={c.id} className="bg-surface">
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Mark as">
+          <div className="grid grid-cols-3 gap-2">
+            {(
+              [
+                { k: "present", label: "Present", tint: "#34d399" },
+                { k: "absent", label: "Absent", tint: "#fb5c7a" },
+                { k: "cancelled", label: "Cancelled", tint: "#9aa2b4" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.k}
+                type="button"
+                onClick={() => setStatus(opt.k)}
+                className={cn(
+                  "pressable rounded-2xl border py-2.5 text-[12.5px] font-semibold capitalize transition-colors",
+                  status === opt.k
+                    ? "border-current"
+                    : "border-line bg-white/[0.03] text-mute"
+                )}
+                style={
+                  status === opt.k
+                    ? {
+                        background: `${opt.tint}14`,
+                        color: opt.tint,
+                      }
+                    : undefined
+                }
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {/* month picker */}
+        <div className="card p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <AnimatePresence mode="popLayout" initial={false}>
+              <motion.h3
+                key={format(cursor, "yyyy-MM")}
+                initial={{ opacity: 0, x: 6 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -6 }}
+                transition={{ duration: 0.22 }}
+                className="font-display text-[15px] font-bold tabular-nums"
+              >
+                {format(cursor, "MMMM yyyy")}
+              </motion.h3>
+            </AnimatePresence>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCursor((c) => subMonths(c, 1))}
+                className="pressable grid size-8 place-items-center rounded-full border border-line bg-white/[0.04] text-mute"
+              >
+                <ChevronLeft size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCursor((c) => addMonths(c, 1))}
+                className="pressable grid size-8 place-items-center rounded-full border border-line bg-white/[0.04] text-mute"
+              >
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          </div>
+          <div className="mb-1 grid grid-cols-7 gap-1">
+            {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+              <div key={i} className="text-center text-[10px] font-bold text-faint">
+                {d}
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {days.map((d) => {
+              const key = format(d, "yyyy-MM-dd");
+              const inMonth = isSameMonth(d, cursor);
+              const isToday = key === today;
+              const isFuture = key > today;
+              const dow = DOW_ORDER[d.getDay()];
+              const scheduled = dowSet.has(dow);
+              const active = selected.has(key);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  disabled={isFuture}
+                  onClick={() => toggle(key)}
+                  className={cn(
+                    "pressable relative aspect-square rounded-xl text-[12.5px] font-semibold transition-colors",
+                    isFuture && "opacity-25",
+                    active
+                      ? status === "present"
+                        ? "bg-good text-white"
+                        : status === "absent"
+                        ? "bg-bad text-white"
+                        : "bg-white/30 text-ink"
+                      : isToday
+                      ? "ring-1 ring-inset ring-primary/70"
+                      : !inMonth
+                      ? "opacity-25"
+                      : "bg-white/[0.03] hover:bg-white/[0.06]"
+                  )}
+                  title={scheduled ? "Class day" : ""}
+                >
+                  {format(d, "d")}
+                  {scheduled && (
+                    <span
+                      className={cn(
+                        "absolute left-1/2 bottom-[3px] size-[5px] -translate-x-1/2 rounded-full",
+                        active ? "bg-white" : "bg-primary2"
+                      )}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={selectAllScheduled}
+              className="pressable flex-1 rounded-xl border border-line bg-white/[0.03] py-2 text-[11.5px] font-semibold text-mute"
+            >
+              All scheduled days
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="pressable flex-1 rounded-xl border border-line bg-white/[0.03] py-2 text-[11.5px] font-semibold text-mute"
+            >
+              Clear
+            </button>
+          </div>
+          <p className="mt-2 text-center text-[11px] text-faint">
+            Selected: <span className="font-bold text-ink">{selected.size}</span> days
+          </p>
+        </div>
+
+        <PrimaryButton
+          onClick={applyBulk}
+          disabled={!courseId || selected.size === 0}
+          loading={busy}
+        >
+          {busy && progress
+            ? `Marking ${progress.done}/${progress.total}…`
+            : `Mark ${selected.size || 0} day${selected.size === 1 ? "" : "s"} as ${status}`}
+        </PrimaryButton>
+      </div>
+    </Sheet>
+  );
+}
+
+/* ------------------------------- REPORT ----------------------------- */
+
+function ReportSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [csv, setCsv] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+
+  async function loadPreview() {
+    setBusy(true);
+    setCsv(null);
+    setSaveNotice(null);
+    try {
+      const res = await fetch("/api/report?format=json", { cache: "no-store" });
+      const j = await res.json();
+      setCsv(j.csv);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (open) loadPreview();
+  }, [open]);
+
+  // Android WebView can't do <a download> on a Blob, so this goes through the
+  // same native share-sheet path as the backup export (Settings page).
+  async function download() {
+    setSaving(true);
+    setSaveNotice(null);
+    try {
+      let content = csv;
+      if (!content) {
+        const res = await fetch("/api/report?format=json", { cache: "no-store" });
+        const j = await res.json();
+        content = j.csv;
+        setCsv(content);
+      }
+      const res = await saveTextFile(`attendance_${todayKey()}.csv`, content ?? "", "text/csv");
+      if (res.ok) {
+        setSaveNotice(
+          res.via === "share" ? "Ready — pick where to save it." : "CSV downloaded."
+        );
+      } else if (!res.cancelled) {
+        setSaveNotice(`Couldn't save the file. ${res.error ?? ""}`.trim());
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function copyClipboard() {
+    if (!csv) return;
+    try {
+      await navigator.clipboard.writeText(csv);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const previewLines = csv ? csv.split(/\r?\n/).slice(0, 14) : [];
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title="Attendance report"
+      subtitle="Semester-wide summary + every marked class"
+    >
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={download}
+            disabled={saving}
+            className="pressable flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-[#8b7dff] to-[#6a58f0] px-4 py-3.5 text-[14px] font-semibold text-white shadow-[0_10px_30px_-8px_#7b6cff88] disabled:opacity-60"
+          >
+            <Download size={16} /> {saving ? "Preparing…" : "Save CSV"}
+          </button>
+          <button
+            type="button"
+            onClick={copyClipboard}
+            disabled={!csv}
+            className="pressable flex items-center justify-center gap-2 rounded-2xl border border-line bg-white/[0.05] px-4 py-3.5 text-[14px] font-semibold text-ink"
+          >
+            {copied ? (
+              <>
+                <Check size={16} className="text-good" /> Copied
+              </>
+            ) : (
+              <>
+                <Copy size={16} /> Copy text
+              </>
+            )}
+          </button>
+        </div>
+
+        <div className="card overflow-hidden">
+          <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+            <FileText size={14} className="text-primary2" />
+            <p className="font-display text-[12.5px] font-semibold tracking-tight">
+              CSV preview · {csv ? csv.split(/\r?\n/).length : 0} rows
+            </p>
+          </div>
+          {busy ? (
+            <div className="space-y-1.5 p-3">
+              {[...Array(8)].map((_, i) => (
+                <div key={i} className="skeleton h-3 rounded" />
+              ))}
+            </div>
+          ) : (
+            <pre className="no-scrollbar max-h-72 overflow-auto px-3 py-3 font-mono text-[11px] leading-relaxed text-mute">
+              {previewLines.join("\n")}
+              {csv && previewLines.length < csv.split(/\r?\n/).length && (
+                <span className="text-faint">{`\n… (${csv.split(/\r?\n/).length - previewLines.length} more rows in the file)`}</span>
+              )}
+            </pre>
+          )}
+        </div>
+
+        {saveNotice && (
+          <p className="text-center text-[12px] font-medium text-good">{saveNotice}</p>
+        )}
+
+        <p className="text-center text-[11.5px] text-faint">
+          Tip: save it, then open with Excel / Sheets / Numbers — perfect for printing or submitting.
+        </p>
+      </div>
+    </Sheet>
+  );
+}
+
+/* --------------------------- PERMISSIONS ----------------------------- */
+
+// Mirrors Capacitor's PermissionState, plus "unsupported" for a plain browser.
+type ReminderPermState = "granted" | "denied" | "prompt" | "prompt-with-rationale" | "unsupported";
+
+function PermissionsSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [perm, setPerm] = useState<ReminderPermState>("prompt");
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    const { isNative } = await import("@/lib/native");
+    if (!isNative()) {
+      setPerm("unsupported");
+      return;
+    }
+    const { LocalNotifications } = await import("@capacitor/local-notifications");
+    const result = await LocalNotifications.checkPermissions();
+    setPerm(result.display as ReminderPermState);
+  }
+
+  useEffect(() => {
+    if (open) refresh();
+  }, [open]);
+
+  async function grant() {
+    setBusy(true);
+    try {
+      const { isNative } = await import("@/lib/native");
+      if (!isNative()) {
+        setPerm("unsupported");
+        return;
+      }
+      const { LocalNotifications } = await import("@capacitor/local-notifications");
+      const result = await LocalNotifications.requestPermissions();
+      setPerm(result.display as ReminderPermState);
+      // Push the current reminder set immediately so granting feels instant.
+      if (result.display === "granted") {
+        const rows = await (await fetch("/api/tasks", { cache: "no-store" })).json();
+        const { syncReminders } = await import("@/lib/reminders");
+        await syncReminders(rows);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const asking = perm === "prompt" || perm === "prompt-with-rationale";
+
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title="Stay on top of deadlines"
+      subtitle="Allow notifications to receive reminders exactly when they're due"
+    >
+      <div className="space-y-5">
+        <div className="card flex items-center gap-4 p-4">
+          <BellRing size={26} className="text-primary2" />
+          <div>
+            <p className="font-display text-[15px] font-semibold">Local reminders</p>
+            <p className="text-[12px] text-mute">
+              Fires a system notification when a reminder is due — even when the app is closed.
+            </p>
+          </div>
+          <span
+            className={cn(
+              "ml-auto rounded-full px-3 py-1 text-[10.5px] font-bold uppercase tracking-wider",
+              perm === "granted" && "bg-good/15 text-good",
+              perm === "denied" && "bg-bad/15 text-bad",
+              asking && "bg-warn/15 text-warn",
+              perm === "unsupported" && "bg-white/10 text-faint"
+            )}
+          >
+            {perm === "granted"
+              ? "on"
+              : perm === "denied"
+              ? "blocked"
+              : perm === "unsupported"
+              ? "n/a"
+              : "ask"}
+          </span>
+        </div>
+        <PrimaryButton onClick={grant} disabled={!asking || busy} loading={busy}>
+          {perm === "granted"
+            ? "Reminders are enabled"
+            : perm === "denied"
+            ? "Enable from Android app settings"
+            : perm === "unsupported"
+            ? "Not available in this preview"
+            : "Enable notifications"}
+        </PrimaryButton>
+        <div className="rounded-2xl border border-dashed border-line bg-white/[0.03] p-4 text-[12px] text-mute">
+          <p className="font-semibold text-ink">How it works</p>
+          <p className="mt-1">
+            Each task has its own reminder time (set to 9:00 AM on the
+            remind-days-before day by default). Reminders are scheduled as
+            real Android notifications and re-synced whenever your tasks
+            change, so they still fire even if the app isn&apos;t open.
+          </p>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 /* ------------------------------ MANAGER ----------------------------- */
 
 export function GlobalSheets() {
@@ -918,15 +1480,26 @@ export function GlobalSheets() {
         presetDate={presetDate}
       />
       <TopicSheet open={kind === "topic"} onClose={close} courses={courses} />
+      <PastAttendanceSheet
+        open={kind === "past_attendance"}
+        onClose={close}
+        courses={courses}
+      />
+      <ReportSheet open={kind === "report"} onClose={close} />
+      <PermissionsSheet open={kind === "permissions"} onClose={close} />
     </>
   );
 }
 
-export const ACTION_ITEMS = [
-  { kind: "task" as SheetKind, label: "New reminder", icon: NotebookPen, tint: "#fbbf24" },
-  { kind: "import" as SheetKind, label: "Import timetable", icon: FileUp, tint: "#4d9de0" },
-  { kind: "exam" as SheetKind, label: "Add exam", icon: BookMarked, tint: "#a293ff" },
-  { kind: "holiday" as SheetKind, label: "Mark holiday", icon: Palmtree, tint: "#34d399" },
-  { kind: "course" as SheetKind, label: "Add course", icon: GraduationCap, tint: "#fb5c7a" },
-  { kind: "topic" as SheetKind, label: "Add topics", icon: ListPlus, tint: "#f97316" },
+export const ACTION_ITEMS: { kind: SheetKind | "attendance"; label: string; icon: typeof ClipboardList; tint: string }[] = [
+  { kind: "task", label: "New reminder", icon: NotebookPen, tint: "#fbbf24" },
+  { kind: "past_attendance", label: "Past attendance", icon: History, tint: "#34d399" },
+  { kind: "attendance", label: "Mark today", icon: UserCheck, tint: "#22C55E" },
+  { kind: "import", label: "Import timetable", icon: FileUp, tint: "#4d9de0" },
+  { kind: "exam", label: "Add exam", icon: BookMarked, tint: "#a293ff" },
+  { kind: "holiday", label: "Mark holiday", icon: Palmtree, tint: "#34d399" },
+  { kind: "course", label: "Add course", icon: GraduationCap, tint: "#fb5c7a" },
+  { kind: "topic", label: "Add topics", icon: ListPlus, tint: "#f97316" },
+  { kind: "report", label: "Download report", icon: Download, tint: "#7b6cff" },
+  { kind: "permissions", label: "Notifications", icon: BellRing, tint: "#fbbf24" },
 ];

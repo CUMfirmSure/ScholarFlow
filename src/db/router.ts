@@ -1,12 +1,12 @@
 /**
  * On-device API router. A line-for-line behavioral port of every Next.js route
  * handler in the original app (/api/courses, /tasks, /exams, /holidays,
- * /syllabus, /attendance, /logs, /summary, /health).
+ * /syllabus, /attendance, /logs, /summary, /health, /report).
  *
  * Contract: handle(method, url, body) -> { status, body }.
  * Errors mirror the originals: 400 for validation, 404 for missing rows.
  */
-import { format, subDays } from "date-fns";
+import { format, parseISO, startOfMonth, subDays } from "date-fns";
 import type { DB, Store } from "./store";
 import { bunkMath, COURSE_COLORS, DOW_ORDER, dowKey, eachDateKey, pct, todayKey } from "@/lib/utils";
 import type {
@@ -250,6 +250,115 @@ function summary(db: DB) {
   };
 }
 
+/* ------------------------------- report -------------------------------- */
+function csvEscape(v: unknown): string {
+  const s = v === null || v === undefined ? "" : String(v);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+/** Port of /api/report's buildCsv(). Returns the same text, built from the local store. */
+function buildReport(db: DB, opts: { from?: string; to?: string }) {
+  const today = todayKey();
+  const from = opts.from || format(startOfMonth(parseISO(today)), "yyyy-MM-dd");
+  const to = opts.to || today;
+
+  const courseRows = [...db.courses].sort(nameAsc);
+  const allMarks = [...db.attendance].sort((a, b) => a.date.localeCompare(b.date));
+  const filtered = allMarks.filter((m) => m.date >= from && m.date <= to);
+  const holidayRows = db.holidays;
+  const taskRows = [...db.tasks].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+  const holidaySet = new Set<string>();
+  for (const h of holidayRows)
+    for (const k of eachDateKey(h.startDate, h.endDate)) holidaySet.add(k);
+
+  const marksByCourseDate = new Map<string, (typeof filtered)[number]>();
+  for (const m of filtered) marksByCourseDate.set(`${m.courseId}|${m.date}`, m);
+
+  const slotsByCourse = new Map<number, SlotRow[]>();
+  for (const s of db.slots) {
+    const arr = slotsByCourse.get(s.courseId) ?? [];
+    arr.push(s);
+    slotsByCourse.set(s.courseId, arr);
+  }
+
+  const days = eachDateKey(from, to);
+  const lines: string[] = [];
+
+  lines.push("# ScholarFlow attendance report");
+  lines.push(["generated", "from", "to", "date"].map(csvEscape).join(","));
+  lines.push([today, from, to, today].map(csvEscape).join(","));
+  lines.push("");
+  lines.push("# Semester summary");
+  lines.push(
+    ["course", "code", "target_percent", "present", "absent", "cancelled", "percentage", "status"]
+      .map(csvEscape)
+      .join(",")
+  );
+  for (const c of courseRows) {
+    const marks = filtered.filter((m) => m.courseId === c.id);
+    const present = marks.filter((m) => m.status === "present").length;
+    const absent = marks.filter((m) => m.status === "absent").length;
+    const cancelled = marks.filter((m) => m.status === "cancelled").length;
+    const total = present + absent;
+    const percent = pct(present, total);
+    const state = total === 0 ? "no data" : percent >= c.targetPercent ? "on track" : "at risk";
+    lines.push(
+      [c.name, c.code, c.targetPercent, present, absent, cancelled, percent, state]
+        .map(csvEscape)
+        .join(",")
+    );
+  }
+  lines.push("");
+
+  lines.push("# Day-by-day (every scheduled class in the range)");
+  lines.push(["date", "course", "code", "scheduled_time", "status", "note"].map(csvEscape).join(","));
+  for (const day of days) {
+    const dow = dowKey(parseISO(day));
+    if (holidaySet.has(day)) {
+      for (const c of courseRows) {
+        if (!(c.daysOfWeek ?? []).includes(dow)) continue;
+        lines.push([day, c.name, c.code, "holiday", "holiday", ""].map(csvEscape).join(","));
+      }
+      continue;
+    }
+    for (const c of courseRows) {
+      const slots = (slotsByCourse.get(c.id) ?? []).filter((s) => s.dayOfWeek === dow);
+      if (!slots.length) continue;
+      const mark = marksByCourseDate.get(`${c.id}|${day}`);
+      for (const s of slots) {
+        const t = s.startTime && s.endTime ? `${s.startTime}-${s.endTime}` : s.startTime;
+        lines.push(
+          [day, c.name, c.code, t, mark ? mark.status : "not marked", mark ? mark.note : ""]
+            .map(csvEscape)
+            .join(",")
+        );
+      }
+    }
+  }
+  lines.push("");
+
+  lines.push("# All marked attendance records");
+  lines.push(["date", "course", "code", "status", "note"].map(csvEscape).join(","));
+  for (const m of filtered) {
+    const c = courseRows.find((x) => x.id === m.courseId);
+    lines.push([m.date, c?.name ?? "", c?.code ?? "", m.status, m.note ?? ""].map(csvEscape).join(","));
+  }
+  lines.push("");
+
+  lines.push("# Reminders & tasks");
+  lines.push(["title", "type", "priority", "due_date", "status", "course"].map(csvEscape).join(","));
+  for (const t of taskRows) {
+    const c = courseRows.find((x) => x.id === t.courseId);
+    lines.push(
+      [t.title, t.type, t.priority, t.dueDate, t.status, c?.name ?? ""].map(csvEscape).join(",")
+    );
+  }
+
+  return { csv: lines.join("\r\n"), generatedAt: today, from, to };
+}
+
 /* ------------------------------ handlers ------------------------------ */
 const VALID_ATT = new Set(["present", "absent", "cancelled"]);
 const VALID_TOPIC = new Set(["pending", "in_progress", "done"]);
@@ -275,6 +384,16 @@ export async function handle(
           return { status: 200, body: { ok: true } };
         case "summary":
           return { status: 200, body: await store.read((db) => summary(db)) };
+        case "report":
+          // Always JSON here — the local router has no way to stream a real
+          // text/csv Response, so the Report sheet reads `.csv` off the body
+          // and hands it to saveTextFile() instead of downloading a blob.
+          return {
+            status: 200,
+            body: await store.read((db) =>
+              buildReport(db, { from: q.get("from") ?? undefined, to: q.get("to") ?? undefined })
+            ),
+          };
         case "courses":
           return {
             status: 200,

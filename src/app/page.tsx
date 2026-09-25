@@ -5,10 +5,12 @@ import { motion } from "framer-motion";
 import {
   AlarmClockCheck,
   ArrowUpRight,
+  Bell,
   BellRing,
   BookOpen,
   CalendarClock,
   Check,
+  Download,
   Flame,
   GraduationCap,
   History,
@@ -454,6 +456,49 @@ export default function Dashboard() {
               No topics yet — add your syllabus to start the pace meter.
             </div>
           )}
+        </div>
+      </motion.div>
+
+      {/* quick tools row */}
+      <motion.div variants={listItem} className="mt-7">
+        <SectionTitle>Tools</SectionTitle>
+        <div className="grid grid-cols-3 gap-2.5">
+          {[
+            {
+              k: "past_attendance" as const,
+              l: "Past attendance",
+              I: History,
+              t: "#34d399",
+            },
+            {
+              k: "report" as const,
+              l: "Export CSV",
+              I: Download,
+              t: "#7b6cff",
+            },
+            {
+              k: "permissions" as const,
+              l: "Reminders",
+              I: BellRing,
+              t: "#fbbf24",
+            },
+          ].map((b) => (
+            <button
+              key={b.k}
+              onClick={() => openSheet(b.k)}
+              className="pressable card flex flex-col items-start gap-2.5 px-3 py-3.5 text-left"
+            >
+              <span
+                className="grid size-9 place-items-center rounded-xl"
+                style={{ background: `${b.t}1a`, color: b.t }}
+              >
+                <b.I size={17} />
+              </span>
+              <p className="text-[12.5px] font-semibold leading-tight">
+                {b.l}
+              </p>
+            </button>
+          ))}
         </div>
       </motion.div>
     </motion.div>

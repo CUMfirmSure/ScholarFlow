@@ -51,7 +51,7 @@ export function BottomNav() {
         <AnimatePresence>
           {fabOpen && (
             <motion.div
-              className="pointer-events-auto absolute right-5 bottom-24 flex w-44 flex-col gap-1.5"
+              className="pointer-events-auto absolute right-5 bottom-[152px] flex max-h-[calc(100dvh-200px)] w-44 flex-col-reverse gap-1.5 overflow-y-auto no-scrollbar pr-1"
               initial="hidden"
               animate="show"
               exit="exit"
@@ -96,12 +96,12 @@ export function BottomNav() {
           )}
         </AnimatePresence>
 
-        {/* FAB */}
+        {/* FAB — sits well above the tab bar so the dial never overlaps it */}
         <motion.button
           whileTap={{ scale: 0.88 }}
           onClick={() => setFabOpen((v) => !v)}
           aria-label="Quick actions"
-          className="pointer-events-auto absolute right-5 bottom-[84px] grid size-14 place-items-center rounded-full bg-gradient-to-b from-[#8b7dff] to-[#6a58f0] text-white shadow-[0_16px_36px_-8px_#7b6cff99]"
+          className="pointer-events-auto absolute right-5 bottom-[152px] grid size-14 place-items-center rounded-full bg-gradient-to-b from-[#8b7dff] to-[#6a58f0] text-white shadow-[0_16px_36px_-8px_#7b6cff99]"
         >
           <motion.span
             animate={{ rotate: fabOpen ? 135 : 0 }}

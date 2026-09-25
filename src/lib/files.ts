@@ -9,7 +9,11 @@ import { Capacitor } from "@capacitor/core";
 
 export type SaveResult = { ok: true; via: "share" | "download" } | { ok: false; cancelled?: boolean; error?: string };
 
-export async function saveTextFile(filename: string, contents: string): Promise<SaveResult> {
+export async function saveTextFile(
+  filename: string,
+  contents: string,
+  mimeType = "application/json"
+): Promise<SaveResult> {
   if (Capacitor.isNativePlatform()) {
     try {
       const { Filesystem, Directory, Encoding } = await import("@capacitor/filesystem");
@@ -42,7 +46,7 @@ export async function saveTextFile(filename: string, contents: string): Promise<
   }
 
   try {
-    const blob = new Blob([contents], { type: "application/json" });
+    const blob = new Blob([contents], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

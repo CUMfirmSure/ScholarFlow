@@ -192,17 +192,25 @@ export default function AttendancePage() {
 
   return (
     <motion.div variants={listStagger} initial="hidden" animate="show">
-      <motion.div variants={listItem} className="flex items-end justify-between">
+      <motion.div variants={listItem} className="flex items-end justify-between gap-2">
         <div>
           <p className="text-[12.5px] font-medium text-mute">Tap once, done</p>
           <h1 className="font-display text-[26px] font-bold tracking-tight">Attendance</h1>
         </div>
-        <button
-          onClick={() => openSheet("course")}
-          className="pressable rounded-full bg-primary/15 px-4 py-2.5 text-[13px] font-semibold text-primary2"
-        >
-          + Course
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => openSheet("past_attendance")}
+            className="pressable rounded-full border border-good/30 bg-good/10 px-3.5 py-2.5 text-[12.5px] font-semibold text-good"
+          >
+            + Past
+          </button>
+          <button
+            onClick={() => openSheet("course")}
+            className="pressable rounded-full bg-primary/15 px-3.5 py-2.5 text-[13px] font-semibold text-primary2"
+          >
+            + Course
+          </button>
+        </div>
       </motion.div>
 
       {loading || !data ? (
