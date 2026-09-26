@@ -44,7 +44,7 @@ export type TableName =
   | "syllabus"
   | "logs";
 
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 const KEY = "scholarflow:db:v1";
 
 export function emptyDB(): DB {
@@ -110,6 +110,25 @@ export function migrate(raw: unknown): DB | null {
           sortOrder: i,
         });
       });
+    }
+  }
+
+  /**
+   * v2 -> v3: courses gain a `startDate` (defaults to blank — "not set" —
+   * rather than guessing), and attendance rows gain a `session` number so a
+   * subject that meets twice in one day can hold two separate marks instead
+   * of overwriting each other. Every pre-existing mark is simply "session 1".
+   */
+  if (v < 3) {
+    for (const c of db.courses) {
+      if (typeof (c as { startDate?: string }).startDate !== "string") {
+        (c as { startDate: string }).startDate = "";
+      }
+    }
+    for (const a of db.attendance) {
+      if (typeof (a as { session?: number }).session !== "number") {
+        (a as { session: number }).session = 1;
+      }
     }
   }
   return db;

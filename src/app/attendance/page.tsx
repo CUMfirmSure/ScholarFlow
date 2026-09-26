@@ -150,6 +150,31 @@ function CourseCard({ c, today }: { c: CourseStat; today: string }) {
                 </div>
               </div>
             )}
+            {c.examWindow ? (
+              <div className="mx-4 mb-3.5 rounded-2xl border border-line bg-white/[0.03] p-3.5">
+                <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-faint">
+                  Since {fmtDate(c.examWindow.startDate, "d MMM")} → {c.examWindow.examSubject} on{" "}
+                  {fmtDate(c.examWindow.examDate, "d MMM")}
+                </p>
+                <div className="flex items-baseline gap-2">
+                  <span className="font-display text-[20px] font-bold tabular-nums">
+                    {c.examWindow.percentage}%
+                  </span>
+                  <span className="text-[11.5px] text-mute">
+                    {c.examWindow.present}/{c.examWindow.present + c.examWindow.absent} attended ·{" "}
+                    {c.examWindow.scheduled} scheduled
+                    {c.examWindow.cancelled > 0 ? ` · ${c.examWindow.cancelled} cancelled` : ""}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              !c.startDate && (
+                <p className="mx-4 mb-3.5 text-[11px] text-faint">
+                  Set a start date on this course (and add an exam for it) to see attendance
+                  measured up to your nearest exam.
+                </p>
+              )
+            )}
             <div className="flex items-center justify-between gap-3 px-4 pb-4">
               <p className="truncate text-[12px] text-mute">
                 {c.instructor ? `${c.instructor}` : ""}

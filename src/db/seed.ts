@@ -42,6 +42,7 @@ export function buildSeed(db: DB, nowIso: string, base: Date = new Date()) {
     startTime: d.slots.map((x) => x.start).sort()[0] ?? "",
     endTime: "",
     targetPercent: 75,
+    startDate: minus(24),
     createdAt: nowIso,
   }));
   db.courses.push(...all);
@@ -73,6 +74,7 @@ export function buildSeed(db: DB, nowIso: string, base: Date = new Date()) {
         id: ++db.seq.attendance,
         courseId: c.id,
         date: key(d),
+        session: 1,
         status,
         note: "",
         createdAt: nowIso,
@@ -112,11 +114,19 @@ export function buildSeed(db: DB, nowIso: string, base: Date = new Date()) {
   task("Quiz — process vs thread", "quiz", os.id, minus(6), "medium", "", true);
   task("Eigen values practice sheet", "assignment", maths.id, minus(8), "medium", "", true);
 
-  const exam = (subject: string, n: number, s: string, e: string, venue: string, notes = "") =>
+  const exam = (
+    subject: string,
+    courseId: number | null,
+    n: number,
+    s: string,
+    e: string,
+    venue: string,
+    notes = ""
+  ) =>
     db.exams.push({
       id: ++db.seq.exams,
       subject,
-      courseId: null,
+      courseId,
       date: plus(n),
       startTime: s,
       endTime: e,
@@ -124,10 +134,10 @@ export function buildSeed(db: DB, nowIso: string, base: Date = new Date()) {
       notes,
       createdAt: nowIso,
     });
-  exam("Engineering Mathematics", 12, "09:30", "12:30", "Exam Hall A", "Units 3–5 emphasis");
-  exam("Database Management Systems", 14, "09:30", "12:30", "Exam Hall B");
-  exam("Operating Systems", 16, "13:30", "16:30", "Exam Hall A");
-  exam("Computer Networks", 18, "09:30", "12:30", "Exam Hall C");
+  exam("Engineering Mathematics", maths.id, 12, "09:30", "12:30", "Exam Hall A", "Units 3–5 emphasis");
+  exam("Database Management Systems", dbms.id, 14, "09:30", "12:30", "Exam Hall B");
+  exam("Operating Systems", os.id, 16, "13:30", "16:30", "Exam Hall A");
+  exam("Computer Networks", cn.id, 18, "09:30", "12:30", "Exam Hall C");
 
   db.holidays.push(
     { id: ++db.seq.holidays, title: "Festival Break", startDate: plus(8), endDate: plus(9), kind: "holiday", createdAt: nowIso },

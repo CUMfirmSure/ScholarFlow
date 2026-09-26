@@ -123,6 +123,7 @@ export function parseBackup(raw: string): { db: DB; repaired: string[] } {
       startTime: s(row.startTime),
       endTime: s(row.endTime),
       targetPercent: Math.min(100, Math.max(1, Number(row.targetPercent) || 75)),
+      startDate: isDate(row.startDate) ? (row.startDate as string) : "",
       createdAt: s(row.createdAt, new Date().toISOString()),
     });
   }
@@ -172,13 +173,15 @@ export function parseBackup(raw: string): { db: DB; repaired: string[] } {
     need(courseIds.has(row.courseId as number), `Attendance row #${i + 1} points to a course that isn't in the backup.`);
     need(isDate(row.date), `Attendance row #${i + 1} has a bad date.`);
     need(["present", "absent", "cancelled"].includes(row.status as string), `Attendance row #${i + 1} has a bad status.`);
-    const key = `${row.courseId}|${row.date}`;
-    need(!attKeys.has(key), `Duplicate attendance for one course on ${row.date}.`);
+    const session = Number.isFinite(Number(row.session)) && Number(row.session) > 0 ? Math.floor(Number(row.session)) : 1;
+    const key = `${row.courseId}|${row.date}|${session}`;
+    need(!attKeys.has(key), `Duplicate attendance for one course on ${row.date} (session ${session}).`);
     attKeys.add(key);
     db.attendance.push({
       id: row.id as number,
       courseId: row.courseId as number,
       date: row.date as string,
+      session,
       status: row.status as "present" | "absent" | "cancelled",
       note: s(row.note),
       createdAt: s(row.createdAt, new Date().toISOString()),

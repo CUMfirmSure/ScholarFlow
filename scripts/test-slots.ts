@@ -162,7 +162,7 @@ async function main() {
     const dow = dowKey();
     // Simulate a course that exists with days but has no slot rows.
     await s.transact((db) => {
-      db.courses.push({ id: ++db.seq.courses, name: "OldStyle", code: "", color: "#6C5CE7", instructor: "", location: "", daysOfWeek: [dow], startTime: "12:00", endTime: "12:50", targetPercent: 75, createdAt: new Date().toISOString() });
+      db.courses.push({ id: ++db.seq.courses, name: "OldStyle", code: "", color: "#6C5CE7", instructor: "", location: "", daysOfWeek: [dow], startTime: "12:00", endTime: "12:50", targetPercent: 75, startDate: "", createdAt: new Date().toISOString() });
     });
     const sm: any = (await call(s, "GET", "/api/summary")).body;
     const c = sm.courses[0];
@@ -213,8 +213,23 @@ async function main() {
     t("migrate() returns a DB", !!m);
     t("version bumped to current", m.meta.version === DB_VERSION);
     t("seeded flag preserved (demo data must not return)", m.meta.seeded === true);
-    t("courses preserved exactly", eq(m.courses, v1.courses));
-    t("attendance preserved exactly", eq(m.attendance, v1.attendance));
+    // v3 additionally backfills `startDate` (courses) and `session` (attendance)
+    // onto pre-existing rows — so "preserved" now means "identical apart from
+    // those two additive, safe-default fields", not byte-for-byte anymore.
+    t(
+      "courses preserved (plus startDate backfilled to '')",
+      eq(
+        m.courses.map(({ startDate, ...rest }) => rest),
+        v1.courses
+      ) && m.courses.every((c) => c.startDate === "")
+    );
+    t(
+      "attendance preserved (plus session backfilled to 1)",
+      eq(
+        m.attendance.map(({ session, ...rest }) => rest),
+        v1.attendance
+      ) && m.attendance.every((a) => a.session === 1)
+    );
     t("tasks preserved exactly", eq(m.tasks, v1.tasks));
     t("one slot synthesised per legacy day (mon, wed)", m.slots.length === 2 && eq(m.slots.map((x) => x.dayOfWeek), ["mon", "wed"]));
     t("synthesised slots carry the course's start/end", m.slots.every((x) => x.startTime === "09:00" && x.endTime === "09:55"));
@@ -300,6 +315,65 @@ async function main() {
       t(`rejects: ${name}`, r.ok === false, JSON.stringify(r).slice(0, 90));
       if (JSON.stringify(s.db) !== before) t(`  (live data changed by rejected '${name}'!)`, false);
     }
+  }
+
+  console.log("\n== multi-lecture days: a course meeting twice in one day ==");
+  {
+    const { s } = await mk();
+    const c: any = (await call(s, "POST", "/api/courses", {
+      name: "Lab", slots: [{ dayOfWeek: dowKey(), startTime: "09:00" }],
+    })).body;
+    const day = todayKey();
+    const r1: any = (await call(s, "POST", "/api/attendance", { courseId: c.id, date: day, status: "present", session: 1 })).body;
+    const r2: any = (await call(s, "POST", "/api/attendance", { courseId: c.id, date: day, status: "absent", session: 2 })).body;
+    t("session 1 and session 2 are separate rows", r1.id !== r2.id);
+    t("session 1 kept its own status (present)", r1.status === "present");
+    t("session 2 kept its own status (absent)", r2.status === "absent");
+    const sm: any = (await call(s, "GET", "/api/summary")).body;
+    const course = sm.courses.find((x: any) => x.id === c.id);
+    t("todayMarks has both lectures", course.todayMarks.length === 2);
+    t("present + absent counted separately in totals", course.present === 1 && course.absent === 1);
+    // Re-posting the same session upserts (edits) rather than adding a 3rd row.
+    const r1b: any = (await call(s, "POST", "/api/attendance", { courseId: c.id, date: day, status: "absent", session: 1 })).body;
+    t("re-posting the same session updates it in place, same id", r1b.id === r1.id && r1b.status === "absent");
+    const smAfter: any = (await call(s, "GET", "/api/summary")).body;
+    t("still exactly 2 marks that day, not 3", smAfter.courses.find((x: any) => x.id === c.id).todayMarks.length === 2);
+    // Omitting `session` defaults to 1 — old callers keep working unchanged.
+    const r3: any = (await call(s, "POST", "/api/attendance", { courseId: c.id, date: "2026-01-05", status: "present" })).body;
+    t("omitted session defaults to 1", r3.session === 1);
+  }
+
+  console.log("\n== exam window: attendance from course start to its nearest exam ==");
+  {
+    const { s } = await mk();
+    // Meets every Monday. Start it 3 Mondays before an exam 1 day after the 3rd Monday.
+    const c: any = (await call(s, "POST", "/api/courses", {
+      name: "Physics", targetPercent: 75, startDate: "2026-01-05", // a Monday
+      slots: [{ dayOfWeek: "mon", startTime: "09:00" }],
+    })).body;
+    await call(s, "POST", "/api/exams", { subject: "Physics Midterm", courseId: c.id, date: "2026-01-27" }); // after 3 Mondays: 5, 12, 19, 26 -> 4 Mondays actually
+    await call(s, "POST", "/api/attendance", { courseId: c.id, date: "2026-01-05", status: "present" });
+    await call(s, "POST", "/api/attendance", { courseId: c.id, date: "2026-01-12", status: "absent" });
+    await call(s, "POST", "/api/attendance", { courseId: c.id, date: "2026-01-19", status: "present" });
+    // 2026-01-26 (the 4th scheduled Monday) intentionally left unmarked.
+    const sm: any = (await call(s, "GET", "/api/summary")).body;
+    const w = sm.courses.find((x: any) => x.id === c.id).examWindow;
+    t("examWindow found the linked exam", w && w.examSubject === "Physics Midterm");
+    t("scheduled counts every Monday in [start, exam] = 4", w.scheduled === 4);
+    t("present/absent match what was actually marked", w.present === 2 && w.absent === 1);
+    t("percentage is present/(present+absent), cancelled excluded", w.percentage === 66.7);
+
+    // A holiday on a scheduled Monday should reduce the scheduled count.
+    await call(s, "POST", "/api/holidays", { title: "Off", startDate: "2026-01-19", endDate: "2026-01-19" });
+    const sm2: any = (await call(s, "GET", "/api/summary")).body;
+    const w2 = sm2.courses.find((x: any) => x.id === c.id).examWindow;
+    t("holiday on a scheduled day drops it from 'scheduled'", w2.scheduled === 3);
+
+    // No exam for the course at all -> no exam window, not a crash.
+    const { s: s2 } = await mk();
+    const c2: any = (await call(s2, "POST", "/api/courses", { name: "NoExam", startDate: "2026-01-01" })).body;
+    const sm3: any = (await call(s2, "GET", "/api/summary")).body;
+    t("no linked exam -> examWindow is null", sm3.courses.find((x: any) => x.id === c2.id).examWindow === null);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

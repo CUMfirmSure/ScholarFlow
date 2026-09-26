@@ -8,10 +8,20 @@
  */
 import { format, parseISO, startOfMonth, subDays } from "date-fns";
 import type { DB, Store } from "./store";
-import { bunkMath, COURSE_COLORS, DOW_ORDER, dowKey, eachDateKey, pct, todayKey } from "@/lib/utils";
+import {
+  bunkMath,
+  COURSE_COLORS,
+  countScheduledLectures,
+  DOW_ORDER,
+  dowKey,
+  eachDateKey,
+  pct,
+  todayKey,
+} from "@/lib/utils";
 import type {
   AttendanceRow,
   CourseRow,
+  CourseStat,
   ExamRow,
   HolidayRow,
   SlotRow,
@@ -110,6 +120,21 @@ function summary(db: DB) {
 
   const courseRows = [...db.courses].sort(nameAsc);
   const attendanceRows = db.attendance.filter((a) => a.date >= from);
+  // Unfiltered — the exam window below can reach further back than the
+  // rolling 120-day window the main ring uses.
+  const allAttendanceByCourse = new Map<number, AttendanceRow[]>();
+  for (const a of db.attendance) {
+    const arr = allAttendanceByCourse.get(a.courseId) ?? [];
+    arr.push(a);
+    allAttendanceByCourse.set(a.courseId, arr);
+  }
+  const examsByCourse = new Map<number, typeof db.exams>();
+  for (const e of db.exams) {
+    if (e.courseId == null) continue;
+    const arr = examsByCourse.get(e.courseId) ?? [];
+    arr.push(e);
+    examsByCourse.set(e.courseId, arr);
+  }
   const taskRows = db.tasks
     .map((t) => joinTask(db, t))
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id - b.id);
@@ -142,12 +167,15 @@ function summary(db: DB) {
   }
 
   const courseStats = courseRows.map((c) => {
-    const marks = (byCourse.get(c.id) ?? []).sort((a, b) => a.date.localeCompare(b.date));
+    const marks = (byCourse.get(c.id) ?? []).sort(
+      (a, b) => a.date.localeCompare(b.date) || a.session - b.session
+    );
     const present = marks.filter((m) => m.status === "present").length;
     const absent = marks.filter((m) => m.status === "absent").length;
     const cancelled = marks.filter((m) => m.status === "cancelled").length;
     const total = present + absent;
-    const todayMark = marks.find((m) => m.date === today) ?? null;
+    const todayMarks = marks.filter((m) => m.date === today);
+    const todayMark = todayMarks[0] ?? null;
     const last14 = Array.from({ length: 14 }, (_, i) => {
       const key = format(subDays(new Date(), 13 - i), "yyyy-MM-dd");
       const m = marks.find((x) => x.date === key);
@@ -172,6 +200,34 @@ function summary(db: DB) {
       ];
     }
 
+    // Attendance measured specifically between this course's start date and
+    // the nearest exam scheduled for it — not the rolling 120-day window
+    // used for the main ring above.
+    let examWindow: CourseStat["examWindow"] = null;
+    const startDate = c.startDate;
+    const nextExam = (examsByCourse.get(c.id) ?? [])
+      .filter((e) => e.date >= startDate)
+      .sort((a, b) => a.date.localeCompare(b.date))[0];
+    if (startDate && nextExam) {
+      const windowMarks = (allAttendanceByCourse.get(c.id) ?? []).filter(
+        (a) => a.date >= startDate && a.date <= nextExam.date
+      );
+      const wPresent = windowMarks.filter((m) => m.status === "present").length;
+      const wAbsent = windowMarks.filter((m) => m.status === "absent").length;
+      const wCancelled = windowMarks.filter((m) => m.status === "cancelled").length;
+      const scheduled = countScheduledLectures(mySlots, holidaySet, startDate, nextExam.date);
+      examWindow = {
+        examDate: nextExam.date,
+        examSubject: nextExam.subject,
+        startDate,
+        present: wPresent,
+        absent: wAbsent,
+        cancelled: wCancelled,
+        scheduled,
+        percentage: pct(wPresent, wPresent + wAbsent),
+      };
+    }
+
     return {
       ...c,
       present,
@@ -181,10 +237,12 @@ function summary(db: DB) {
       percentage: pct(present, total),
       bunk: bunkMath(present, total, c.targetPercent),
       todayMark,
+      todayMarks,
       slots: mySlots,
       todaySlots,
       meetsToday: !holidaySet.has(today) && todaySlots.length > 0,
       last14,
+      examWindow,
     };
   });
 
@@ -508,6 +566,7 @@ export async function handle(
             startTime: start,
             endTime: str(b.endTime),
             targetPercent: Number(b.targetPercent) || 75,
+            startDate: str(b.startDate),
             createdAt: now,
           };
           db.courses.push(row);
@@ -536,6 +595,7 @@ export async function handle(
           if (b.location !== undefined) row.location = String(b.location);
           if (b.endTime !== undefined) row.endTime = String(b.endTime);
           if (b.targetPercent !== undefined) row.targetPercent = Number(b.targetPercent);
+          if (b.startDate !== undefined) row.startDate = String(b.startDate);
           if (slots) {
             row.daysOfWeek = [...new Set(slots.map((x) => x.dayOfWeek))];
             row.startTime =
@@ -646,10 +706,17 @@ export async function handle(
           }
           if (typeof b.subject !== "string" || !b.subject.trim()) throw bad("Subject is required");
           if (typeof b.date !== "string" || !b.date) throw bad("Date is required");
+          const linkedCourseId =
+            b.courseId !== undefined && b.courseId !== null && b.courseId !== ""
+              ? Number(b.courseId)
+              : null;
           const row = {
             id: ++db.seq.exams,
             subject: b.subject.trim(),
-            courseId: null as number | null,
+            courseId:
+              linkedCourseId !== null && db.courses.some((c) => c.id === linkedCourseId)
+                ? linkedCourseId
+                : null,
             date: b.date,
             startTime: str(b.startTime),
             endTime: str(b.endTime),
@@ -772,19 +839,29 @@ export async function handle(
           const date = String(b.date);
           const status = b.status as AttendanceRow["status"];
           const note = str(b.note);
-          // Unique (courseId, date): upsert, exactly like onConflictDoUpdate.
-          let row = db.attendance.find((a) => a.courseId === courseId && a.date === date);
+          // Session lets one date hold more than one lecture for the same
+          // course (e.g. a subject that meets twice that day). Default 1
+          // keeps every existing caller's "one mark per day" behaviour.
+          const session =
+            b.session !== undefined && Number.isFinite(Number(b.session)) && Number(b.session) > 0
+              ? Math.floor(Number(b.session))
+              : 1;
+          // Unique (courseId, date, session): upsert, exactly like onConflictDoUpdate.
+          let row = db.attendance.find(
+            (a) => a.courseId === courseId && a.date === date && a.session === session
+          );
           if (row) {
             row.status = status;
             row.note = note;
           } else {
-            row = { id: ++db.seq.attendance, courseId, date, status, note, createdAt: now };
+            row = { id: ++db.seq.attendance, courseId, date, session, status, note, createdAt: now };
             db.attendance.push(row);
           }
           const c = db.courses.find((x) => x.id === courseId);
           const verb =
             status === "present" ? "Present" : status === "absent" ? "Absent" : "Class cancelled";
-          log(db, "mark", "attendance", `${verb} — ${c?.name ?? "Course"} on ${date}`, now);
+          const sessionNote = session > 1 ? ` (lecture ${session})` : "";
+          log(db, "mark", "attendance", `${verb} — ${c?.name ?? "Course"} on ${date}${sessionNote}`, now);
           return { status: 201, body: row };
         }
         case "DELETE attendance": {

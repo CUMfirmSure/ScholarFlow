@@ -262,6 +262,7 @@ function CourseSheet({
   const [week, setWeek] = useState<WeekState>(emptyWeek());
   const [color, setColor] = useState(COURSE_COLORS[0]);
   const [target, setTarget] = useState("75");
+  const [startDate, setStartDate] = useState(todayKey());
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -273,6 +274,7 @@ function CourseSheet({
       setLocation(editing.location ?? "");
       setColor(editing.color || COURSE_COLORS[0]);
       setTarget(String(editing.targetPercent ?? 75));
+      setStartDate(editing.startDate || todayKey());
       const w = emptyWeek();
       for (const s of editing.slots ?? []) {
         const day = w[s.dayOfWeek];
@@ -289,6 +291,7 @@ function CourseSheet({
       setWeek(emptyWeek());
       setColor(COURSE_COLORS[Math.floor(Math.random() * COURSE_COLORS.length)]);
       setTarget("75");
+      setStartDate(todayKey());
     }
   }, [open, editing]);
 
@@ -339,6 +342,7 @@ function CourseSheet({
     const payload = {
       name, code, instructor, location, slots, color,
       targetPercent: Number(target) || 75,
+      startDate,
     };
     if (editing) await apiSend(`/api/courses/${editing.id}`, "PATCH", payload);
     else await apiSend("/api/courses", "POST", payload);
@@ -523,6 +527,17 @@ function CourseSheet({
             ))}
           </select>
         </Field>
+        <Field label="Start of course">
+          <input
+            type="date"
+            className={inputCls}
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+          <p className="mt-1.5 text-[12px] text-white/40">
+            Used to measure attendance from the start of the term up to the nearest exam for this subject.
+          </p>
+        </Field>
         <PrimaryButton onClick={save} disabled={!name.trim()} loading={busy}>
           {editing ? "Save changes" : "Add course"}
         </PrimaryButton>
@@ -533,8 +548,17 @@ function CourseSheet({
 
 /* ------------------------------- EXAM ------------------------------ */
 
-function ExamSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+function ExamSheet({
+  open,
+  onClose,
+  courses,
+}: {
+  open: boolean;
+  onClose: () => void;
+  courses: CourseRow[];
+}) {
   const [subject, setSubject] = useState("");
+  const [courseId, setCourseId] = useState<number | "">("");
   const [date, setDate] = useState(todayKey());
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
@@ -544,16 +568,29 @@ function ExamSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
 
   useEffect(() => {
     if (open) {
-      setSubject(""); setDate(todayKey()); setStartTime("");
+      setSubject(""); setCourseId(""); setDate(todayKey()); setStartTime("");
       setEndTime(""); setVenue(""); setNotes("");
     }
   }, [open]);
+
+  // Picking a course fills the subject from it (still editable) so linking
+  // an exam to its course — needed for the "attendance up to this exam"
+  // calculation — is the easy default, not extra typing.
+  function pickCourse(id: string) {
+    const n = id === "" ? "" : Number(id);
+    setCourseId(n);
+    if (n !== "") {
+      const c = courses.find((x) => x.id === n);
+      if (c && !subject.trim()) setSubject(c.name);
+    }
+  }
 
   async function save() {
     if (!subject.trim() || !date) return;
     setBusy(true);
     await apiSend("/api/exams", "POST", {
       subject, date, startTime, endTime, venue, notes,
+      courseId: courseId === "" ? null : courseId,
     });
     setBusy(false);
     onClose();
@@ -567,6 +604,25 @@ function ExamSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
       subtitle="It lands on your calendar instantly"
     >
       <div className="space-y-5">
+        <Field label="Course (optional)">
+          <select
+            className={cn(inputCls, "appearance-none")}
+            value={courseId}
+            onChange={(e) => pickCourse(e.target.value)}
+          >
+            <option value="" className="bg-surface">
+              Not linked to a course
+            </option>
+            {courses.map((c) => (
+              <option key={c.id} value={c.id} className="bg-surface">
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-[12px] text-white/40">
+            Linking a course lets its attendance be measured from its start date up to this exam.
+          </p>
+        </Field>
         <Field label="Subject / paper">
           <input
             className={inputCls}
@@ -919,17 +975,21 @@ function PastAttendanceSheet({
     "present"
   );
   const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // date -> how many lectures to mark that day (1, or 2 for a day the
+  // subject met twice). Tapping a day cycles 0 -> 1 -> 2 -> 0.
+  const [selected, setSelected] = useState<Map<string, number>>(new Map());
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [justApplied, setJustApplied] = useState(false);
 
   useEffect(() => {
     if (open) {
       setCourseId(courses[0]?.id ?? null);
       setStatus("present");
       setCursor(startOfMonth(new Date()));
-      setSelected(new Set());
+      setSelected(new Map());
       setProgress(null);
+      setJustApplied(false);
     }
   }, [open, courses]);
 
@@ -954,72 +1014,67 @@ function PastAttendanceSheet({
     [course]
   );
 
+  // Tap once = 1 lecture that day, tap again = 2 (a subject that met twice),
+  // tap a third time = deselect. This is what lets a day with a double
+  // lecture get logged as two separate marks instead of one overwriting.
   function toggle(key: string) {
     if (key > today) return; // future lockout
+    setJustApplied(false);
     setSelected((p) => {
-      const n = new Set(p);
-      n.has(key) ? n.delete(key) : n.add(key);
+      const n = new Map(p);
+      const cur = n.get(key) ?? 0;
+      if (cur >= 2) n.delete(key);
+      else n.set(key, cur + 1);
       return n;
     });
   }
 
-  function rangeSelect(key: string) {
-    if (selected.size === 0) return toggle(key);
-    // pick a contig window from nearest already-selected day → key
-    const sorted = [...selected].sort();
-    const start = sorted[0];
-    let cur = start < key ? start : key;
-    const end = key < start ? start : key;
-    const set = new Set<string>();
-    while (cur <= end) {
-      if (cur <= today) set.add(cur);
-      cur = addDays(parseISO(cur), 1).toISOString().slice(0, 10);
-    }
-    setSelected(set);
-  }
-
   function selectAllScheduled() {
     if (!course) return;
-    const list: string[] = [];
+    const next = new Map<string, number>();
     let cur = startOfMonth(cursor);
     const end = endOfMonth(cursor);
     while (cur <= end) {
       const key = format(cur, "yyyy-MM-dd");
       if (key <= today) {
         const dow = DOW_ORDER[cur.getDay()];
-        if (dowSet.has(dow)) list.push(key);
+        if (dowSet.has(dow)) next.set(key, 1);
       }
       cur = addDays(cur, 1);
     }
-    setSelected(new Set(list));
+    setSelected(next);
   }
   function clearSelection() {
-    setSelected(new Set());
+    setSelected(new Map());
   }
+
+  const totalLectures = [...selected.values()].reduce((a, b) => a + b, 0);
 
   async function applyBulk() {
     if (!courseId || selected.size === 0) return;
     setBusy(true);
-    setProgress({ done: 0, total: selected.size });
-    const dates = [...selected];
+    setJustApplied(false);
+    setProgress({ done: 0, total: totalLectures });
+    const entries = [...selected.entries()];
     let done = 0;
-    for (const date of dates) {
-      try {
-        await apiSend("/api/attendance", "POST", {
-          courseId,
-          date,
-          status,
-        });
-      } catch {
-        /* skip */
+    for (const [date, count] of entries) {
+      for (let session = 1; session <= count; session++) {
+        try {
+          await apiSend("/api/attendance", "POST", { courseId, date, status, session });
+        } catch {
+          /* skip */
+        }
+        done += 1;
+        setProgress({ done, total: totalLectures });
       }
-      done += 1;
-      setProgress({ done, total: selected.size });
     }
     setBusy(false);
     setProgress(null);
-    setSelected(new Set());
-    onClose();
+    setSelected(new Map());
+    // Stays open on purpose: this is what lets you mark some days present
+    // and, right after, switch to absent and mark others — all in one visit
+    // — instead of the sheet closing and forcing you to reopen it.
+    setJustApplied(true);
   }
 
   return (
@@ -1036,7 +1091,7 @@ function PastAttendanceSheet({
             value={courseId ?? ""}
             onChange={(e) => {
               setCourseId(Number(e.target.value));
-              setSelected(new Set());
+              setSelected(new Map());
             }}
           >
             {courses.map((c) => (
@@ -1128,7 +1183,8 @@ function PastAttendanceSheet({
               const isFuture = key > today;
               const dow = DOW_ORDER[d.getDay()];
               const scheduled = dowSet.has(dow);
-              const active = selected.has(key);
+              const count = selected.get(key) ?? 0;
+              const active = count > 0;
               return (
                 <button
                   key={key}
@@ -1150,9 +1206,14 @@ function PastAttendanceSheet({
                       ? "opacity-25"
                       : "bg-white/[0.03] hover:bg-white/[0.06]"
                   )}
-                  title={scheduled ? "Class day" : ""}
+                  title={scheduled ? "Class day — tap again for a 2nd lecture that day" : "Tap again for a 2nd lecture that day"}
                 >
                   {format(d, "d")}
+                  {count === 2 && (
+                    <span className="absolute right-[2px] top-[2px] rounded-full bg-black/25 px-[3px] text-[8px] font-bold leading-[11px]">
+                      ×2
+                    </span>
+                  )}
                   {scheduled && (
                     <span
                       className={cn(
@@ -1182,9 +1243,18 @@ function PastAttendanceSheet({
             </button>
           </div>
           <p className="mt-2 text-center text-[11px] text-faint">
-            Selected: <span className="font-bold text-ink">{selected.size}</span> days
+            Selected: <span className="font-bold text-ink">{selected.size}</span> day{selected.size === 1 ? "" : "s"}
+            {totalLectures !== selected.size && (
+              <> · <span className="font-bold text-ink">{totalLectures}</span> lectures</>
+            )}
           </p>
         </div>
+
+        {justApplied && selected.size === 0 && !busy && (
+          <p className="rounded-xl bg-good/10 px-3 py-2 text-center text-[11.5px] font-semibold text-good">
+            Marked. Pick a different status above to keep going — e.g. mark more days absent — or close when you're done.
+          </p>
+        )}
 
         <PrimaryButton
           onClick={applyBulk}
@@ -1193,7 +1263,7 @@ function PastAttendanceSheet({
         >
           {busy && progress
             ? `Marking ${progress.done}/${progress.total}…`
-            : `Mark ${selected.size || 0} day${selected.size === 1 ? "" : "s"} as ${status}`}
+            : `Mark ${totalLectures || 0} lecture${totalLectures === 1 ? "" : "s"} as ${status}`}
         </PrimaryButton>
       </div>
     </Sheet>
@@ -1472,7 +1542,7 @@ export function GlobalSheets() {
     <>
       <TaskSheet open={kind === "task"} onClose={close} courses={courses} />
       <CourseSheet open={kind === "course"} onClose={close} editing={editing} />
-      <ExamSheet open={kind === "exam"} onClose={close} />
+      <ExamSheet open={kind === "exam"} onClose={close} courses={courses} />
       <ImportSheet open={kind === "import"} onClose={close} />
       <HolidaySheet
         open={kind === "holiday"}

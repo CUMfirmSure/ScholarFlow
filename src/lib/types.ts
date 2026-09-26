@@ -19,6 +19,7 @@ export type CourseRow = {
   startTime: string;
   endTime: string;
   targetPercent: number;
+  startDate: string;
   createdAt: string;
   slots?: SlotRow[];
 };
@@ -27,6 +28,9 @@ export type AttendanceRow = {
   id: number;
   courseId: number;
   date: string;
+  /** Which lecture of that day this is — 1 for the normal case, 2+ when a
+   * subject meets more than once on the same date. */
+  session: number;
   status: "present" | "absent" | "cancelled";
   note: string;
   createdAt: string;
@@ -89,6 +93,20 @@ export type LogRow = {
   createdAt: string;
 };
 
+export type ExamWindowStat = {
+  /** The nearest upcoming exam this window is measured against. */
+  examDate: string;
+  examSubject: string;
+  startDate: string;
+  present: number;
+  absent: number;
+  cancelled: number;
+  /** How many lecture instances the weekly schedule implies in this window
+   * (holidays excluded), independent of what's actually been marked. */
+  scheduled: number;
+  percentage: number;
+};
+
 export type CourseStat = CourseRow & {
   present: number;
   absent: number;
@@ -97,10 +115,12 @@ export type CourseStat = CourseRow & {
   percentage: number;
   bunk: { state: "none" | "safe" | "risk"; message: string };
   todayMark: AttendanceRow | null;
+  todayMarks: AttendanceRow[];
   meetsToday: boolean;
   slots: SlotRow[];
   todaySlots: SlotRow[];
   last14: { date: string; status: string | null }[];
+  examWindow: ExamWindowStat | null;
 };
 
 export type Summary = {

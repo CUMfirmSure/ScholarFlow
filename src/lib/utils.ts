@@ -131,3 +131,34 @@ export function pct(present: number, total: number) {
   if (total === 0) return 0;
   return Math.round((present / total) * 1000) / 10;
 }
+
+/**
+ * How many lecture instances a weekly slot pattern implies between two dates
+ * (inclusive), skipping any date in `holidayKeys`. A day with two slots (e.g.
+ * a subject that meets twice) counts as two lectures that day. Used to size
+ * the "start of course -> nearest exam" attendance window — that span can
+ * run a full semester, so this doesn't share eachDateKey's short 62-day cap.
+ */
+export function countScheduledLectures(
+  slots: { dayOfWeek: string }[],
+  holidayKeys: Set<string>,
+  startKey: string,
+  endKey: string
+): number {
+  if (!startKey || !endKey || startKey > endKey) return 0;
+  const perDow = new Map<string, number>();
+  for (const s of slots) perDow.set(s.dayOfWeek, (perDow.get(s.dayOfWeek) ?? 0) + 1);
+  if (perDow.size === 0) return 0;
+
+  let count = 0;
+  let cur = parseISO(startKey);
+  const end = parseISO(endKey);
+  let guard = 0;
+  while (cur <= end && guard < 730) {
+    const key = format(cur, "yyyy-MM-dd");
+    if (!holidayKeys.has(key)) count += perDow.get(dowKey(cur)) ?? 0;
+    cur = addDays(cur, 1);
+    guard++;
+  }
+  return count;
+}

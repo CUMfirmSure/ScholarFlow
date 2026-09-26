@@ -16,6 +16,8 @@ import {
   History,
   Minus,
   Palmtree,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   X,
 } from "lucide-react";
@@ -34,57 +36,54 @@ const TYPE_TINT: Record<string, string> = {
 };
 
 function AttendanceButtons({ c, today }: { c: CourseStat; today: string }) {
-  if (c.todayMark) {
-    const s = c.todayMark.status;
-    return (
-      <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            "flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11.5px] font-semibold",
-            s === "present" && "bg-good/15 text-good",
-            s === "absent" && "bg-bad/15 text-bad",
-            s === "cancelled" && "bg-white/10 text-mute"
-          )}
-        >
-          {s === "present" ? <Check size={13} /> : s === "absent" ? <X size={13} /> : <Minus size={13} />}
-          {s === "present" ? "Present" : s === "absent" ? "Absent" : "Cancelled"}
-        </span>
-        <button
-          onClick={() => apiSend(`/api/attendance/${c.todayMark!.id}`, "DELETE")}
-          className="pressable text-[11px] font-medium text-faint underline underline-offset-2"
-        >
-          undo
-        </button>
-      </div>
-    );
-  }
+  // Every tap always ADDS the next lecture for today rather than overwriting
+  // the last one — that's what lets a subject that meets twice in one day
+  // (e.g. a lab) get marked present for the morning slot and absent for the
+  // evening one, instead of the second tap erasing the first.
+  const marks = c.todayMarks?.length ? c.todayMarks : c.todayMark ? [c.todayMark] : [];
+  const nextSession = marks.length + 1;
+  const mark = (status: "present" | "absent" | "cancelled") =>
+    apiSend("/api/attendance", "POST", { courseId: c.id, date: today, status, session: nextSession });
+
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center justify-end gap-1.5">
+      {marks.map((m) => {
+        const s = m.status;
+        return (
+          <span
+            key={m.id}
+            className={cn(
+              "flex items-center gap-1 rounded-full py-1 pl-2.5 pr-1.5 text-[11px] font-semibold",
+              s === "present" && "bg-good/15 text-good",
+              s === "absent" && "bg-bad/15 text-bad",
+              s === "cancelled" && "bg-white/10 text-mute"
+            )}
+          >
+            {s === "present" ? <Check size={11} /> : s === "absent" ? <X size={11} /> : <Minus size={11} />}
+            {marks.length > 1 ? `L${m.session}` : s === "present" ? "Present" : s === "absent" ? "Absent" : "Cancelled"}
+            <button
+              onClick={() => apiSend(`/api/attendance/${m.id}`, "DELETE")}
+              className="pressable grid size-4 place-items-center rounded-full text-current/70 hover:bg-black/10"
+              aria-label="Undo this mark"
+            >
+              <X size={10} />
+            </button>
+          </span>
+        );
+      })}
       <motion.button
         whileTap={{ scale: 0.9 }}
-        onClick={() =>
-          apiSend("/api/attendance", "POST", {
-            courseId: c.id,
-            date: today,
-            status: "present",
-          })
-        }
+        onClick={() => mark("present")}
         className="grid size-9 place-items-center rounded-full border border-good/40 bg-good/10 text-good"
-        aria-label="Mark present"
+        aria-label={marks.length ? "Mark another lecture present" : "Mark present"}
       >
         <Check size={16} strokeWidth={2.6} />
       </motion.button>
       <motion.button
         whileTap={{ scale: 0.9 }}
-        onClick={() =>
-          apiSend("/api/attendance", "POST", {
-            courseId: c.id,
-            date: today,
-            status: "absent",
-          })
-        }
+        onClick={() => mark("absent")}
         className="grid size-9 place-items-center rounded-full border border-bad/40 bg-bad/10 text-bad"
-        aria-label="Mark absent"
+        aria-label={marks.length ? "Mark another lecture absent" : "Mark absent"}
       >
         <X size={16} strokeWidth={2.6} />
       </motion.button>
@@ -110,6 +109,25 @@ export default function Dashboard() {
 
   const riskCount = data.backlogs.riskCourses.length;
   const nextExam = data.upcomingExams[0];
+  // Attendance scoped to "since this course started, up to its nearest
+  // exam" — a different, more actionable question than the rolling overall
+  // percentage above (which just looks at the last 120 days).
+  const examReadiness = data.courses
+    .filter((c) => c.examWindow)
+    .map((c) => {
+      const w = c.examWindow!;
+      return {
+        id: c.id,
+        name: c.name,
+        startDate: w.startDate,
+        examSubject: w.examSubject,
+        examDate: w.examDate,
+        percentage: w.percentage,
+        targetPercent: c.targetPercent,
+        onTrack: w.present + w.absent === 0 || w.percentage >= c.targetPercent,
+      };
+    })
+    .sort((a, b) => Number(a.onTrack) - Number(b.onTrack) || a.examDate.localeCompare(b.examDate));
 
   return (
     <motion.div variants={listStagger} initial="hidden" animate="show">
@@ -285,6 +303,54 @@ export default function Dashboard() {
           </div>
         )}
       </motion.div>
+
+      {/* exam readiness — logical analysis, not a raw stat: for each course
+          with a start date and an upcoming exam, is attendance since the
+          start of the course (up to that exam) actually on pace for target? */}
+      {examReadiness.length > 0 && (
+        <motion.div variants={listItem}>
+          <SectionTitle
+            right={
+              <Link href="/attendance" className="flex items-center gap-1 text-[12.5px] font-semibold text-primary2">
+                Attendance <ArrowUpRight size={14} />
+              </Link>
+            }
+          >
+            Exam readiness
+          </SectionTitle>
+          <div className="space-y-2">
+            {examReadiness.map((r) => (
+              <div key={r.id} className="card flex items-center gap-3 px-4 py-3">
+                <div
+                  className="grid size-9 shrink-0 place-items-center rounded-xl"
+                  style={{ background: `${r.onTrack ? "#34d399" : "#fb5c7a"}18` }}
+                >
+                  {r.onTrack ? (
+                    <ShieldCheck size={16} className="text-good" />
+                  ) : (
+                    <ShieldAlert size={16} className="text-bad" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13.5px] font-semibold">{r.name}</p>
+                  <p className="truncate text-[11.5px] text-mute">
+                    {r.percentage}% since {fmtDate(r.startDate, "d MMM")} · {r.examSubject} on{" "}
+                    {fmtDate(r.examDate, "d MMM")}
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold",
+                    r.onTrack ? "bg-good/15 text-good" : "bg-bad/15 text-bad"
+                  )}
+                >
+                  {r.onTrack ? "On pace" : `Need ${r.targetPercent}%`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      )}
 
       {/* deadlines */}
       <motion.div variants={listItem}>
